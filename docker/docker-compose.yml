@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  # SeekDB 数据库服务
+  db:
+    image: quay.io/oceanbase/seekdb:latest
+    container_name: DB_CONTAINER_NAME_PLACEHOLDER
+    ports:
+      - "2881:2881"
+    volumes:
+      - ./data/seekdb:/data
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+
+  # FastAPI 后端服务
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: BACKEND_CONTAINER_NAME_PLACEHOLDER
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./logs_debug:/app/logs_debug
+      - ./recordings:/app/recordings
+      - ./.env:/app/.env:ro
+    environment:
+      - SEEKDB_HOST=db
+      - SEEKDB_PORT=2881
+      - SEEKDB_DATABASE=lab_log
+      - SEEKDB_USER=root
+      - SEEKDB_PASSWORD=
+    env_file:
+      - .env
+    depends_on:
+      - db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx 前端服务
+  nginx:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+    container_name: FRONTEND_CONTAINER_NAME_PLACEHOLDER
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+networks:
+  default:
+    name: lab-log-network

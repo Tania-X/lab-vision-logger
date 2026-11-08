@@ -1,0 +1,40 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# 环境变量
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# 安装 ffmpeg
+COPY docker/offline-tools/ffmpeg /usr/local/bin/ffmpeg
+COPY docker/offline-tools/ffprobe /usr/local/bin/ffprobe
+RUN chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+
+# 安装 uv
+COPY docker/offline-tools/uv /usr/local/bin/uv
+COPY docker/offline-tools/uvx /usr/local/bin/uvx
+RUN chmod +x /usr/local/bin/uv /usr/local/bin/uvx
+
+# 先复制依赖文件（利用缓存）
+COPY pyproject.toml uv.lock ./
+RUN uv sync --no-dev
+
+# 再复制代码
+COPY . /app
+
+# 创建非 root 用户
+RUN useradd -m appuser && \
+    mkdir -p logs_debug recordings && \
+    chown -R appuser:appuser /app
+
+USER appuser
+
+# 暴露端口
+EXPOSE 8000
+
+# 健康检查
+# HEALTHCHECK CMD curl --fail http://localhost:8000/health || exit 1
+
+# 启动
+CMD ["uv", "run", "gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "2", "-b", "0.0.0.0:8000", "web_api.main:app"]

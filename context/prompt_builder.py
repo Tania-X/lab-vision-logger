@@ -1,0 +1,260 @@
+"""动态提示词构建器：基于上下文构建视频理解提示"""
+
+import json
+from datetime import datetime
+from typing import List, Dict, Any, Optional, Tuple
+
+from storage.models import VideoSegment
+from context.appearance_cache import AppearanceCache
+
+
+class PromptBuilder:
+    """动态提示词构建器"""
+    
+    def __init__(self, max_recent_events: int = 20):
+        """
+        初始化提示词构建器
+        
+        Args:
+            max_recent_events: 最大最近事件数
+        """
+        self.max_recent_events = max_recent_events
+    
+    def build_dynamic_prompt(
+        self,
+        segment: VideoSegment,
+        qr_results: List[Dict[str, Any]],
+        recent_events: List[Dict[str, Any]],
+        appearance_cache: AppearanceCache,
+        max_event_id: int,
+        max_person_id: Optional[int]
+    ) -> str:
+        """
+        构建动态提示词
+        
+        Args:
+            segment: 视频分段
+            qr_results: 二维码识别结果
+            recent_events: 最近事件列表
+            appearance_cache: 人物外貌缓存
+            max_event_id: 当前最大事件编号数字
+            max_person_id: 当前最大人物编号数字（可能为 None）
+        
+        Returns:
+            构建好的提示词文本
+        """
+        # 格式化各部分内容
+        qr_section = self._format_qr_results(qr_results)
+        events_section = self._format_recent_events(recent_events)
+        appearance_section = self._format_appearance_table(appearance_cache)
+        
+        # 计算新编号的起始值
+        next_event_id = max_event_id + 1
+        next_person_id = (max_person_id or 0) + 1
+        
+        prompt = f"""请分析这段实验室视频，结合已有的上下文信息，输出续写的事件日志、人物外貌记录更新以及紧急情况识别。
+
+## 时间戳
+- 视频中的时间戳水印格式为 "yyyy-MM-dd Time: hh:mm:ss"
+- 如果时间戳水印缺少日期，使用2025-1-1作为日期
+
+## 二维码识别结果
+{qr_section}
+
+## 最近事件记录（参考描述风格，共 {len(recent_events)} 条）
+{events_section}
+
+## 人物外貌表（已全量给出）
+{appearance_section}
+
+## 任务要求
+
+### 1. 紧急情况识别（最高优先级）
+- **核心识别对象**：识别画面中是否出现“火焰”（Flames）。
+- **判定标准**：如果画面中出现明火，必须记录为紧急情况。
+- **输出要求**：如果发现紧急情况，在返回的 JSON 中填写 `emergency_events` 字段。如果没发现，则该字段为空数组。
+
+### 2. 事件识别
+- 识别视频中人物进入或离开画面（是否携带物品）、人物操作设备或化学品、设备状态变化，raw_text 字段可以很详细。
+- 根据视频画面左上角的时间戳水印确定时间
+- **event_type 只能是 "person" 或 "equipment-only" 或 "none"**，不能使用其他值。
+- 一个视频片段内，可能发生多个事件。
+- 最近事件记录不一定是正确的，续写事件日志要以画面为准。
+- 不同事件的时间范围可以有部分或完全重叠。例如，如果画面中同时出现某个人物和某个显示数值的设备，而且人物动作和设备状态变化是独立的，那么这两个事件应当分开记录而且有部分或完全的重叠时间范围。
+- 关于 person 事件
+  - person 事件中，如果人物操作了什么设备，那么 equipment 字段应当记录该设备名称。如果人物没有操作设备，那么 equipment 字段应当为空字符串。
+  - **同一个人的连续操作涉及相同的一个或多个设备时，应当合并为一个事件。为此，raw_text 字段内容可以长一些。**
+  - 注意描述人物**把什么物品从哪个容器取出**，或者**把什么物品放进哪个容器**。人物从同一个容器可能取出物品，也可能放入物品，关键在于**人物的手上是多了物品还是少了物品**。
+  - 如果看不清是什么物品，就描述为“某个物品”。
+  - 如果画面内存在多个相似的容器，例如多个相似的抽屉，那么描述中应当借助画面中有唯一性、一般不会转移的物品和方位词来辅助限定容器对象。
+  - 注意描述人物使用的化学品包装上的文字。如果看不清，则描述化学品的颜色、物质状态，例如“红色粉末”、“无色液体”。
+  - 多个人物同时出现时，如果人物动作关系密切，则记录为多人共同参与的事件（person_ids 包含多个人物编号），否则分开记录各自的事件。
+- 关于 equipment-only 事件
+  - 每个能显示数值的设备都应当被记录，**不论示数是否变化**。
+  - **如果人物操作的设备有示数，那么该示数及其变化应当记录在这个人的 person 事件中。**
+  - 如果设备示数与人物动作无关，那么单独记录为 equipment-only 事件（person_ids 为空数组）。
+- 关于 none 事件
+  - 如果画面中既没有人物活动，也没有设备显示数值或者看不清示数，那么返回 none 事件（person_ids 为空数组，equipment 为空字符串）。
+
+### 3. 人物识别与外貌匹配
+- **优先重用已有外貌记录**：当前画面中的人物如与已有外貌描述匹配（尤其是稀有特征匹配），应使用已有的 person_id
+- 外貌描述要从头到脚详细描述，常见特点和稀有特点都要描述。看不清的特征不要描述。
+- **稀有特征**（如特殊发色、独特配饰、鲜艳衣服颜色、衣服上的显眼图案、特殊体型等）的区分价值更高
+- **常见特征**（如白色实验服/白大褂、黑色头发、戴眼镜）一致仅是匹配的必要条件，不能仅凭常见特征就判定为同一人
+- **稀有特征**一致是合并的强信号，但仍需确认无冲突。若缺少稀有特征区分，不要轻易合并已有的外貌记录
+- 实验室人物频繁穿上或脱下手套，因此区分人物时不要借助手套特征来考虑。
+- 发现全新人物时，追加新记录
+
+### 4. 二维码用户关联
+- 当二维码识别结果中的时间戳与视频画面时间接近时，观察该时刻画面中展示二维码的人物
+- 如果该人物的外貌与已有外貌记录匹配，则更新该外貌记录，补充 user_id
+- 如果该人物的外貌与已有外貌记录不匹配，则追加新记录，带有 user_id
+
+### 5. 外貌记录操作
+- **add**: 基于当前视频画面发现新人物，那么追加记录（新编号必须 > 现存最大）
+- **update**: 基于当前视频画面更新已记录的人物的外貌特征或 user_id
+- **merge**: 基于当前视频画面发现两个记录是同一人，那么将小编号合并到大编号
+  - 合并时，将小编号的所有特征融合到大编号的描述中
+  - merge_from 必须小于 target_person_id
+
+### 6. 编号分配规则
+- **新事件编号必须从 evt_{next_event_id:05d} 开始递增**
+- start_time 在先的事件先描述。如果两个事件的 start_time 相同，则随意。
+- **新人物编号必须从 p{next_person_id} 开始递增**
+
+## 输出格式
+必须输出以下 JSON 格式：
+
+```json
+{{
+  "events_to_append": [
+    {{
+      "event_id": "evt_xxxxx",
+      "start_time": "2025-12-24T10:00:00",
+      "end_time": "2025-12-24T10:00:20",
+      "event_type": "person",
+      "person_ids": ["p3"],
+      "description": "人物 p3 向本摄像头展示二维码。"
+    }}
+  ],
+  "appearance_updates": [
+    {{
+      "op": "add",
+      "target_person_id": "p7",
+      "appearance": "短黑发，戴黑框眼镜，穿白色实验服...",
+      "user_id": null
+    }}
+  ],
+  "emergency_events": [
+    {{
+      "description": "画面左侧离心机位置出现明火，伴随黑烟。",
+      "start_time": "2025-12-24T10:00:05",
+      "end_time": "2025-12-24T10:00:15"
+    }}
+  ]
+}}
+```
+
+## 注意事项
+- **必须优先检查并记录紧急情况（如火焰）。**
+- **同一个人的连续操作涉及相同的一个或多个设备时，应当合并为一个事件。为此，raw_text 字段内容可以长一些。**
+- 事件描述中不要包含具体的人物外貌特征和 user_id，这些信息只保存在外貌表中
+- equipment-only 和 none 事件的 person_ids 应为空数组 []
+- 如果没有外貌更新，appearance_updates 返回空数组
+- 如果没有紧急情况，emergency_events 返回空数组
+"""
+        return prompt
+    
+    def _format_qr_results(self, qr_results: List[Dict[str, Any]]) -> str:
+        """格式化二维码识别结果"""
+        if not qr_results:
+            return "（本视频片段无二维码识别结果）"
+        
+        lines = []
+        for qr in qr_results:
+            user_id = qr.get('user_id', '未知')
+            # 将毫秒时间戳转换为秒精度的可读时间
+            detected_at = qr.get('detected_at', '')
+            if not detected_at:
+                detected_at_ms = qr.get('detected_at_ms')
+                if detected_at_ms:
+                    dt = datetime.fromtimestamp(detected_at_ms / 1000)
+                    detected_at = dt.strftime('%Y-%m-%dT%H:%M:%S')
+            
+            # 如果 detected_at 已经是 ISO 格式，截取到秒
+            if detected_at and '.' in detected_at:
+                detected_at = detected_at.split('.')[0]
+            
+            # confidence = qr.get('confidence', 0)
+            lines.append(f"- 用户ID: {user_id}, 识别时间: {detected_at}")
+        
+        return "\n".join(lines)
+    
+    def _format_recent_events(self, events: List[Dict[str, Any]]) -> str:
+        """格式化最近事件记录"""
+        if not events:
+            return "（暂无事件记录）"
+        
+        lines = []
+        for event in events:
+            person_ids = event.get('person_ids', [])
+            person_str = ", ".join(person_ids) if person_ids else "-"
+            equipment = event.get('equipment', '') or "-"
+            
+            line = (
+                f"- {event.get('event_id', '')} | "
+                f"{event.get('start_time', '')} ~ {event.get('end_time', '')} | "
+                f"{event.get('event_type', '')} | "
+                f"人物: {person_str} | "
+                f"设备: {equipment} | "
+                f"{event.get('description', '')}"
+            )
+            lines.append(line)
+        
+        return "\n".join(lines)
+    
+    def _format_appearance_table(self, appearance_cache: AppearanceCache) -> str:
+        """格式化人物外貌表"""
+        main_records, aliases = appearance_cache.get_for_prompt()
+        
+        if not main_records:
+            return "（暂无人物外貌记录）"
+        
+        lines = []
+        
+        # 主记录
+        lines.append("### 人物记录")
+        for record in main_records:
+            user_id_str = f", 用户ID: {record['user_id']}" if record.get('user_id') else ""
+            lines.append(f"- {record['person_id']}: {record['appearance']}{user_id_str}")
+        
+        # 别名
+        if aliases:
+            lines.append("\n### 编号别名（已合并）")
+            for alias_info in aliases:
+                lines.append(f"- {alias_info['alias']} -> {alias_info['main_person_id']}")
+        
+        return "\n".join(lines)
+    
+    def build_system_instruction(self) -> str:
+        """
+        构建系统指令
+        
+        Returns:
+            系统指令文本
+        """
+        return """你是一个实验室视频分析助手，负责分析视频内容并生成结构化的事件日志。
+
+你需要：
+1. 仔细观察视频中的人物动作和设备状态
+2. 根据时间戳水印确定事件的时间范围
+3. 将观察结果与已有的上下文（事件记录、人物外貌表）关联
+4. 输出续写的事件和外貌更新，格式必须为指定的 JSON 格式
+
+关键原则：
+- 准确识别时间戳，精确到秒
+- 优先重用已有的人物编号，避免创建重复记录
+- 外貌匹配时，稀有特征的权重高于常见特征
+- 不在事件描述中提及人物外貌信息（如上衣颜色、头发颜色等），这些信息保存在外貌表中
+- 只输出 JSON，不要输出其他内容"""
+

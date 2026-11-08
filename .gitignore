@@ -1,0 +1,88 @@
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 编辑器配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 日志文件
+*.log
+logs/
+
+# 临时文件
+temp/
+tmp/
+*.tmp
+images/
+recordings/
+test_keys/
+logs_debug/
+
+# 依赖目录
+node_modules/
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+
+# 编译文件
+*.o
+*.exe
+*.out
+*.class
+
+# 环境变量文件
+.env
+.env.local
+docker/.env
+
+# Arduino 敏感配置文件
+**/secrets.h
+
+# SSH 密钥
+log-camera
+log-camera.pub
+
+# 离线部署文件
+docker/offline-packages/
+docker/offline-tools/
+
+# AI编程规范文件（根据实际情况添加）
+CLINE.md
+# Python（新增）
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# 环境与密钥
+.env
+*.pem
+scripts/test_keys/
+
+# 运行产物
+logs_debug/
+recordings/
+qr_test_segments/
+*.mp4
+*.h264
+
+# 前端
+web_ui/node_modules/
+web_ui/dist/
+
+# AI 工具配置
+.cursor/
+.qoder/
+.aider*
+.claude/

@@ -1,0 +1,83 @@
+name: Deploy to Server
+
+on:
+  # 手动触发部署
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: '要部署的分支'
+        required: true
+        default: 'main'
+        type: string
+
+jobs:
+  deploy:
+    runs-on: self-hosted  # 在自托管的服务器上运行
+    
+    steps:
+      # 检出指定分支的代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+      
+      # 将代码同步到指定目录
+      - name: Sync to deploy directory
+        run: |
+          mkdir -p /home/lablog/lab-log
+          rsync -av --delete ./ /home/lablog/lab-log/
+      
+      # 复制离线工具
+      - name: Copy offline tools
+        run: |
+          echo "📦 复制离线工具ffmpeg..."
+          mkdir -p /home/lablog/lab-log/docker/offline-tools
+          if [ -d "/home/lablog/repo/ffmpegrepo" ]; then
+            cp /home/lablog/repo/ffmpegrepo/ffmpeg /home/lablog/lab-log/docker/offline-tools/ffmpeg
+            cp /home/lablog/repo/ffmpegrepo/ffprobe /home/lablog/lab-log/docker/offline-tools/ffprobe
+            echo "✅ ffmpeg 复制完成"
+          else
+            echo "❌ /home/lablog/repo/ffmpegrepo 不存在"
+            exit 1
+          fi
+
+          echo "📦 复制离线工具uv..."
+          if [ -d "/home/lablog/repo/uvrepo" ]; then
+            cp /home/lablog/repo/uvrepo/uv /home/lablog/lab-log/docker/offline-tools/uv
+            cp /home/lablog/repo/uvrepo/uvx /home/lablog/lab-log/docker/offline-tools/uvx
+            echo "✅ uv 复制完成"
+          else
+            echo "❌ /home/lablog/repo/uvrepo 不存在"
+            exit 1
+          fi
+      
+      # 创建 .env 文件
+      - name: Copy .env file
+        run: |
+          echo "📄 复制 .env 文件..."
+          if [ -f "/home/lablog/static-files/.env" ]; then
+            cp /home/lablog/static-files/.env /home/lablog/lab-log/docker/
+            echo "✅ .env 文件复制完成"
+          else
+            echo "❌ /home/lablog/static-files/.env 不存在"
+            exit 1
+          fi
+      
+      # 执行部署脚本
+      - name: Run deploy script
+        run: |
+          echo "🚀 开始执行部署脚本..."
+          chmod +x /home/lablog/lab-log/deploy/deploy.sh
+          if /home/lablog/lab-log/deploy/deploy.sh; then
+            echo "✅ 部署成功完成"
+          else
+            echo "❌ 部署失败"
+            exit 1
+          fi
+      
+      - name: Show deployment info
+        run: |
+          echo "✅ 代码已成功部署到服务器"
+          echo "🌿 部署分支: ${{ github.event.inputs.branch }}"
+          echo "🔖 提交哈希: $(git rev-parse --short HEAD)"
+          echo ""
